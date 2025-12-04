@@ -1,24 +1,52 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
+import os
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.core.files.storage import default_storage
+from .detect import model
 from .models import trapImage
+from django.conf import settings
 
-from .detect import count_worms
+@csrf_exempt
+def imageUploadView(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "POST request required"}, status=400)
 
-class imageUploadview(APIView):
-    def post(self, request):
-        file = request.FILES.get("image")
-        
-        if file is None:
-            return Response({"error": "No image provided"}, status=400)
-        img_obj = trapImage.objects.create(image= file)
-        
-        worm_count = count_worms(img_obj.image.path)
-        img_obj.worm_count = worm_count
-        img_obj.save()
-        
-        return Response({
-             "message": "Image received",
-            "worm_count": worm_count,
-            "timestamp": img_obj.timestamp,
-            "image_url": img_obj.image.url
-        }, status=201)
+    if "image" not in request.FILES:
+        return JsonResponse({"error": "No image file provided"}, status=400)
+
+    # Save uploaded image
+    image_file = request.FILES["image"]
+    file_path = default_storage.save(image_file.name, image_file)
+    print(file_path)
+    # Run YOLO detection
+    full_path = os.path.join(settings.MEDIA_ROOT, file_path)
+    results = model(full_path)
+    
+
+    # Count worms
+    boxes = results[0].boxes
+    count = len(boxes)
+
+    # Format bounding boxes
+    detections = []
+    for box in boxes:
+        x1, y1, x2, y2 = box.xyxy[0].tolist()
+        conf = float(box.conf[0])
+        detections.append({
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
+            "confidence": conf,
+        })
+    trapImage.objects.create(
+    image=file_path,
+    count=count
+)
+
+    return JsonResponse({
+        "count": count,
+        "detections": detections,
+        "image_path": file_path
+    })
+    
